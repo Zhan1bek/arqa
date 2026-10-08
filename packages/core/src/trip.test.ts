@@ -297,3 +297,16 @@ describe('parseTrip: кросс-полевые правила не прячут�
     expect(fields).toEqual(expect.arrayContaining(['start', 'commission']));
   });
 });
+
+describe('parseTrip: точность и диапазон времени (находки reviewer)', () => {
+  it('AC-5: доли секунды отвергаются — API отдаёт время без них', () => {
+    expect(fieldsOf({ ...valid, start: '2026-10-01T08:10:00.500+05:00' })).toContain('start');
+  });
+
+  it.each(['0050-06-01T10:00:00+05:00', '1999-12-31T10:00:00+05:00', '2101-01-01T10:00:00+05:00'])(
+    'AC-5: год вне 2000–2100 отвергается: %s',
+    (start) => {
+      expect(fieldsOf({ ...valid, start })).toContain('start');
+    },
+  );
+});

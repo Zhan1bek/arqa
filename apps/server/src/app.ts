@@ -45,8 +45,24 @@ function apiError(code: string, message: string, extra: Partial<ApiError['error'
   return { error: { code, message, ...extra } };
 }
 
+const FRAMEWORK_ERRORS: Record<number, [code: string, message: string]> = {
+  400: ['BAD_REQUEST', 'Тело запроса должно быть корректным JSON'],
+  413: ['PAYLOAD_TOO_LARGE', 'Тело запроса слишком большое'],
+  415: ['UNSUPPORTED_MEDIA_TYPE', 'Нужен content-type: application/json'],
+};
+
+/** Fail at startup on a typo in DRIVER_TZ instead of answering 500 to every request. */
+function assertTimeZone(timeZone: string): void {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone });
+  } catch {
+    throw new Error(`Unknown time zone "${timeZone}" (DRIVER_TZ must be an IANA name)`);
+  }
+}
+
 export function buildApp(options: AppOptions = {}): FastifyInstance {
   const timeZone = options.timeZone ?? 'Asia/Almaty';
+  assertTimeZone(timeZone);
   const repo = new TripRepository(options.dbPath ?? ':memory:', timeZone);
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 16 * 1024 });
 
@@ -70,8 +86,12 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       return reply.status(500).send(apiError('INTERNAL', 'Внутренняя ошибка сервера'));
     }
     // Fastify's own 4xx (malformed JSON, wrong content type, body too large).
-    return reply.status(status).send(apiError('BAD_REQUEST', error.message));
+    const known = FRAMEWORK_ERRORS[status] ?? ['BAD_REQUEST', 'Некорректный запрос'];
+    return reply.status(status).send(apiError(known[0], known[1]));
   });
+
+  // Only JSON bodies are accepted; text/plain would otherwise reach the schema as a string.
+  app.removeContentTypeParser('text/plain');
 
   app.setNotFoundHandler((_request, reply) =>
     reply.status(404).send(apiError('NOT_FOUND', 'Маршрут не найден')),

@@ -572,7 +572,7 @@ describe('POST /api/trips — валидация (AC-5)', () => {
   it('AC-5: тело — не объект (массив) → 400', async () => {
     const res = await postTrip(app, [trip()]);
     expect(res.statusCode).toBe(400);
-    expect(['VALIDATION_ERROR', 'BAD_REQUEST']).toContain(res.json<ErrorResponse>().error.code);
+    expect(res.json<ErrorResponse>().error.code).toBe('VALIDATION_ERROR');
   });
 });
 
@@ -737,5 +737,40 @@ describe('POST /api/trips — конфликт (AC-7)', () => {
     expect(res.statusCode).toBe(409);
     expect(res.json<ErrorResponse>().error.code).toBe('TRIP_CONFLICT');
     expect((await getDay(app2, '2026-10-01')).trips[0]?.amount).toBe(2400);
+  });
+});
+
+describe('Ошибки транспорта и конфигурации (находки reviewer и api-qa)', () => {
+  let app: FastifyInstance;
+  beforeEach(() => {
+    app = makeApp();
+  });
+
+  it('AC-5: text/plain с корректной поездкой → 415 UNSUPPORTED_MEDIA_TYPE', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/trips',
+      headers: { 'content-type': 'text/plain' },
+      payload: JSON.stringify(trip()),
+    });
+    expect(res.statusCode).toBe(415);
+    expect(res.json<ErrorResponse>().error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+  });
+
+  it('AC-5: тело больше 16 КБ → 413 PAYLOAD_TOO_LARGE с русским сообщением', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/trips',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ ...trip(), pad: 'x'.repeat(20_000) }),
+    });
+    expect(res.statusCode).toBe(413);
+    const { error } = res.json<ErrorResponse>();
+    expect(error.code).toBe('PAYLOAD_TOO_LARGE');
+    expect(error.message).toMatch(/[А-Яа-я]/);
+  });
+
+  it('опечатка в часовом поясе — ошибка при старте, а не 500 на каждый запрос', () => {
+    expect(() => buildApp({ timeZone: 'Asia/Almatyy' })).toThrow(/Asia\/Almatyy/);
   });
 });

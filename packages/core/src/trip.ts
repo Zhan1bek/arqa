@@ -14,11 +14,29 @@ const tenge = (label: string) =>
     .int({ error: `${label}: только целые тенге` })
     .max(MAX_TRIP_AMOUNT, { error: `${label}: не больше ${MAX_TRIP_AMOUNT}` });
 
+/** Years outside this range are typos, and years 0–99 break JS Date arithmetic. */
+export const MIN_TRIP_YEAR = 2000;
+export const MAX_TRIP_YEAR = 2100;
+
+// Whole seconds only: the API renders times without fractions, so a non-zero millisecond would
+// make the echoed trip differ from the stored instant (and a replay of it a 409). A zero fraction
+// is fine — JS clients send `toISOString()`, which always has `.000`.
 const instant = (label: string) =>
-  z.iso.datetime({
-    offset: true,
-    error: `${label}: нужна дата и время ISO 8601 со смещением, например 2026-10-01T08:10:00+05:00`,
-  });
+  z.iso
+    .datetime({
+      offset: true,
+      error: `${label}: нужны дата и время ISO 8601 с секундами и смещением, например 2026-10-01T08:10:00+05:00`,
+    })
+    .refine((value) => Date.parse(value) % 1000 === 0, {
+      error: `${label}: время с точностью до секунды, без долей`,
+    })
+    .refine(
+      (value) => {
+        const year = Number(value.slice(0, 4));
+        return year >= MIN_TRIP_YEAR && year <= MAX_TRIP_YEAR;
+      },
+      { error: `${label}: год должен быть от ${MIN_TRIP_YEAR} до ${MAX_TRIP_YEAR}` },
+    );
 
 const tripObject = z.object(
   {
