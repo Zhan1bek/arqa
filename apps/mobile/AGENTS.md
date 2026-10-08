@@ -23,11 +23,16 @@ npx expo install --fix      # fix incompatible package versions
 
 Run lint and typecheck before declaring any task done.
 
-## Navigation & Routing
+## This app
 
-- Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
-- Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
-- Docs: https://docs.expo.dev/router/introduction.md
+- One screen (`src/DayScreen.tsx`), no router on purpose. If a second screen appears, add
+  Expo Router then (routes in `src/app/`), not before.
+- Business rules come from `@diary/core` (shared with the server). Never re-implement
+  validation, money formatting or date logic here — see the root `AGENTS.md`.
+- Logic that can be tested without React Native lives in `src/lib/` and is covered by Vitest
+  (`npm test` from the repo root). Keep components thin.
+- API base URL: `src/config.ts` (`EXPO_PUBLIC_API_URL`, else the Metro host IP on a phone).
+- A new trip id is created once per opened form and reused on every retry (ADR-0003).
 
 ## Building with EAS
 
