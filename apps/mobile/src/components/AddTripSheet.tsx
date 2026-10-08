@@ -12,8 +12,9 @@ import {
   View,
 } from 'react-native';
 import { randomUUID } from 'expo-crypto';
-import type { PaymentMethod } from '@diary/core';
-import { ApiError, type ApiClient } from '../lib/api';
+import type { PaymentMethod, TripInput } from '@diary/core';
+import type { ApiClient } from '../lib/api';
+import { classifySaveError } from '../lib/submission';
 import { buildTrip, issuesToFormErrors, type TripFormValues } from '../lib/tripForm';
 import { colors, radius } from '../theme';
 
@@ -24,21 +25,33 @@ interface Props {
   dayTitle: string;
   onClose: () => void;
   onSaved: () => void;
+  /** The day may have changed on the server (e.g. a 409): reload it, keep the sheet open. */
+  onDayChanged: () => void;
 }
 
 const EMPTY: TripFormValues = { start: '', end: '', amount: '', commission: '', payment: 'card' };
 
 /**
  * Mounted only while open, so every opening gets a fresh trip id. The id is created once
- * and reused for every retry of this form — that is what makes "save" safe to press again
- * after a network error (ADR-0003).
+ * and reused for every retry of this form, and after a save with an unknown outcome the
+ * payload is frozen too — see lib/submission.ts (ADR-0003).
  */
-export function AddTripSheet({ api, date, utcOffset, dayTitle, onClose, onSaved }: Props) {
+export function AddTripSheet({
+  api,
+  date,
+  utcOffset,
+  dayTitle,
+  onClose,
+  onSaved,
+  onDayChanged,
+}: Props) {
   const [tripId] = useState(() => randomUUID());
   const [values, setValues] = useState<TripFormValues>(EMPTY);
   const [errors, setErrors] = useState<Partial<Record<keyof TripFormValues, string>>>({});
   const [banner, setBanner] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** Set once a request with this id may have reached the server; then only it is resent. */
+  const [frozen, setFrozen] = useState<TripInput | null>(null);
 
   const set = (field: keyof TripFormValues) => (text: string) => {
     setValues((v) => ({ ...v, [field]: text }));
@@ -48,22 +61,36 @@ export function AddTripSheet({ api, date, utcOffset, dayTitle, onClose, onSaved 
   async function save() {
     if (saving) return;
     setBanner(null);
-    const result = buildTrip(values, { id: tripId, date, utcOffset });
-    if (!result.ok) {
-      setErrors(result.errors);
-      return;
+    let trip = frozen;
+    if (!trip) {
+      const result = buildTrip(values, { id: tripId, date, utcOffset });
+      if (!result.ok) {
+        setErrors(result.errors);
+        return;
+      }
+      trip = result.trip;
     }
     setSaving(true);
     try {
-      await api.createTrip(result.trip);
+      await api.createTrip(trip);
       onSaved();
     } catch (error) {
-      if (error instanceof ApiError && error.issues.length > 0) {
-        setErrors(issuesToFormErrors(error.issues));
-      } else if (error instanceof ApiError) {
-        setBanner(error.message);
-      } else {
-        setBanner('Нет связи с сервером. Нажмите «Сохранить» ещё раз — поездка не задвоится.');
+      const failure = classifySaveError(error);
+      switch (failure.kind) {
+        case 'unknown':
+          setFrozen(trip);
+          setBanner(failure.message);
+          break;
+        case 'invalid':
+          setErrors(issuesToFormErrors(failure.error.issues));
+          break;
+        case 'conflict':
+          setBanner(failure.message);
+          onDayChanged();
+          break;
+        case 'rejected':
+          setBanner(failure.message);
+          break;
       }
     } finally {
       setSaving(false);
@@ -85,7 +112,8 @@ export function AddTripSheet({ api, date, utcOffset, dayTitle, onClose, onSaved 
               <Field label="Начало" error={errors.start}>
                 <TextInput
                   testID="input-start"
-                  style={styles.input}
+                  style={[styles.input, frozen && styles.inputLocked]}
+                  editable={!frozen}
                   value={values.start}
                   onChangeText={set('start')}
                   placeholder="08:10"
@@ -96,7 +124,8 @@ export function AddTripSheet({ api, date, utcOffset, dayTitle, onClose, onSaved 
               <Field label="Окончание" error={errors.end}>
                 <TextInput
                   testID="input-end"
-                  style={styles.input}
+                  style={[styles.input, frozen && styles.inputLocked]}
+                  editable={!frozen}
                   value={values.end}
                   onChangeText={set('end')}
                   placeholder="08:32"
@@ -110,7 +139,8 @@ export function AddTripSheet({ api, date, utcOffset, dayTitle, onClose, onSaved 
               <Field label="Сумма, ₸" error={errors.amount}>
                 <TextInput
                   testID="input-amount"
-                  style={styles.input}
+                  style={[styles.input, frozen && styles.inputLocked]}
+                  editable={!frozen}
                   value={values.amount}
                   onChangeText={set('amount')}
                   placeholder="2400"
@@ -120,7 +150,8 @@ export function AddTripSheet({ api, date, utcOffset, dayTitle, onClose, onSaved 
               <Field label="Комиссия, ₸" error={errors.commission}>
                 <TextInput
                   testID="input-commission"
-                  style={styles.input}
+                  style={[styles.input, frozen && styles.inputLocked]}
+                  editable={!frozen}
                   value={values.commission}
                   onChangeText={set('commission')}
                   placeholder="360"
@@ -135,7 +166,7 @@ export function AddTripSheet({ api, date, utcOffset, dayTitle, onClose, onSaved 
                 <Pressable
                   key={method}
                   testID={`payment-${method}`}
-                  onPress={() => setValues((v) => ({ ...v, payment: method }))}
+                  onPress={() => !frozen && setValues((v) => ({ ...v, payment: method }))}
                   style={[styles.segmentItem, values.payment === method && styles.segmentActive]}
                   accessibilityRole="radio"
                   accessibilityState={{ selected: values.payment === method }}
@@ -160,7 +191,9 @@ export function AddTripSheet({ api, date, utcOffset, dayTitle, onClose, onSaved 
                 {saving ? (
                   <ActivityIndicator color={colors.accentText} />
                 ) : (
-                  <Text style={styles.buttonText}>Сохранить</Text>
+                  <Text style={styles.buttonText}>
+                    {frozen ? 'Отправить ещё раз' : 'Сохранить'}
+                  </Text>
                 )}
               </Pressable>
             </View>
@@ -215,6 +248,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: colors.text,
   },
+  inputLocked: { backgroundColor: colors.background, color: colors.muted },
   error: { color: colors.negative, fontSize: 12, marginTop: 4 },
   segment: { flexDirection: 'row', gap: 8, marginBottom: 16 },
   segmentItem: {

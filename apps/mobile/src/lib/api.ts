@@ -65,13 +65,37 @@ export function createApiClient(options: ApiClientOptions) {
   const timeoutMs = options.timeoutMs ?? 10_000;
   const sleep = options.sleep ?? defaultSleep;
 
-  async function attempt(url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+  interface RawResponse {
+    status: number;
+    ok: boolean;
+    /** `undefined` when the body was not JSON (e.g. a captive-portal HTML page). */
+    body: unknown;
+  }
+
+  /**
+   * One HTTP attempt. The body is read inside the same timeout/abort window as the headers:
+   * a response whose body is still streaming must not outlive a cancelled request.
+   */
+  async function attempt(
+    url: string,
+    init: RequestInit,
+    signal?: AbortSignal,
+  ): Promise<RawResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const onAbort = () => controller.abort();
     signal?.addEventListener('abort', onAbort);
     try {
-      return await doFetch(url, { ...init, signal: controller.signal });
+      const response = await doFetch(url, { ...init, signal: controller.signal });
+      const text = await response.text();
+      let body: unknown;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = undefined;
+      }
+      if (controller.signal.aborted) throw new Error('Aborted');
+      return { status: response.status, ok: response.ok, body };
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
@@ -79,14 +103,15 @@ export function createApiClient(options: ApiClientOptions) {
   }
 
   /**
-   * Retries only what is safe to retry: network failures and 5xx. Every endpoint here is
-   * idempotent (GETs, and POST /api/trips is keyed by trip id — ADR-0003), so a retry after
-   * a lost response cannot create a duplicate.
+   * Retries only what is safe to retry: network failures, timeouts, 5xx and "2xx that is not
+   * our JSON". Every endpoint here is idempotent (GETs, and POST /api/trips is keyed by trip
+   * id — ADR-0003), so a retry after a lost response cannot create a duplicate.
    */
   async function request<T>(
     path: string,
     init: RequestInit = {},
     signal?: AbortSignal,
+    isExpected: (body: unknown) => boolean = (body) => typeof body === 'object' && body !== null,
   ): Promise<T> {
     const url = `${options.baseUrl}${path}`;
     let lastError = 'нет ответа от сервера';
@@ -95,7 +120,7 @@ export function createApiClient(options: ApiClientOptions) {
       if (i > 0) await sleep(retryDelays[i - 1] ?? 0);
       if (signal?.aborted) throw signal.reason ?? new Error('Aborted');
 
-      let response: Response;
+      let response: RawResponse;
       try {
         response = await attempt(url, init, signal);
       } catch (error) {
@@ -109,18 +134,22 @@ export function createApiClient(options: ApiClientOptions) {
         continue;
       }
 
-      const body: unknown = await response.json().catch(() => null);
-      if (!response.ok) {
-        const err = (body as { error?: Partial<ApiError> & { issues?: ValidationIssue[] } } | null)
-          ?.error;
-        throw new ApiError(
-          response.status,
-          err?.code ?? 'HTTP_ERROR',
-          err?.message ?? `Ошибка ${response.status}`,
-          err?.issues ?? [],
-        );
+      if (response.ok) {
+        // A 200 with someone else's body (Wi-Fi login page, proxy) is not a success.
+        if (isExpected(response.body)) return response.body as T;
+        lastError = 'неожиданный ответ сервера';
+        continue;
       }
-      return body as T;
+
+      const err = (
+        response.body as { error?: { code?: string; message?: string; issues?: ValidationIssue[] } }
+      )?.error;
+      throw new ApiError(
+        response.status,
+        err?.code ?? 'HTTP_ERROR',
+        err?.message ?? `Ошибка ${response.status}`,
+        err?.issues ?? [],
+      );
     }
     throw new NetworkError(lastError);
   }
@@ -133,11 +162,16 @@ export function createApiClient(options: ApiClientOptions) {
 
     /** `trip.id` must stay the same across user retries — that is what prevents duplicates. */
     createTrip: (trip: TripInput) =>
-      request<CreateTripResponse>('/api/trips', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(trip),
-      }),
+      request<CreateTripResponse>(
+        '/api/trips',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(trip),
+        },
+        undefined,
+        (body) => (body as Partial<CreateTripResponse> | undefined)?.trip?.id === trip.id,
+      ),
   };
 }
 

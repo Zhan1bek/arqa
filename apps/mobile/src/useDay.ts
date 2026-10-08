@@ -22,7 +22,9 @@ export function useDay(api: ApiClient, date: string) {
     }));
     api
       .getDay(date, controller.signal)
-      .then((data) => setState({ status: 'ready', data }))
+      .then((data) => {
+        if (!controller.signal.aborted) setState({ status: 'ready', data });
+      })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         const message = error instanceof Error ? error.message : 'Неизвестная ошибка';

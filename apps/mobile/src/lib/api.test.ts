@@ -340,3 +340,62 @@ describe('getDay: отмена через AbortSignal', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe('ответы, которые только выглядят успешными (находки reviewer)', () => {
+  const html: Step = () =>
+    Promise.resolve(new Response('<html>Wi-Fi login</html>', { status: 200 }));
+
+  /** Headers arrive immediately, the body only after `delayMs` (or never, if delayMs is null). */
+  const slowBody =
+    (body: unknown, delayMs: number | null): Step =>
+    (init) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener('abort', () =>
+            controller.error(new DOMException('Aborted', 'AbortError')),
+          );
+          if (delayMs === null) return;
+          setTimeout(() => {
+            try {
+              controller.enqueue(new TextEncoder().encode(JSON.stringify(body)));
+              controller.close();
+            } catch {
+              // already aborted
+            }
+          }, delayMs);
+        },
+      });
+      return Promise.resolve(new Response(stream, { status: 200 }));
+    };
+
+  it('200 с HTML (captive portal) — не успех: повтор, затем NetworkError', async () => {
+    const { fetch, calls } = fakeFetch(html);
+    const { api } = client(fetch);
+    await expect(api.getDay('2026-10-01')).rejects.toBeInstanceOf(NetworkError);
+    expect(calls).toHaveLength(4);
+  });
+
+  it('AC-9: createTrip, получивший 200 без своей поездки, не считается сохранённым', async () => {
+    const { fetch, calls } = fakeFetch(json(200, { ok: true }), json(201, { created: true, trip }));
+    const { api } = client(fetch);
+    await expect(api.createTrip(trip)).resolves.toEqual({ created: true, trip });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.init.body).toBe(calls[0]!.init.body);
+  });
+
+  it('отмена во время чтения тела — промис отклоняется, а не отдаёт старый день', async () => {
+    const { fetch } = fakeFetch(slowBody({ date: 'OLD-DAY' }, 50));
+    const { api } = client(fetch);
+    const controller = new AbortController();
+    const pending = api.getDay('2026-10-01', controller.signal);
+    setTimeout(() => controller.abort(), 5);
+    await expect(pending).rejects.toBeDefined();
+  });
+
+  it('тело, зависшее после заголовков, ловится таймаутом', async () => {
+    const { fetch, calls } = fakeFetch(slowBody(null, null));
+    const { api } = client(fetch, { timeoutMs: 20 });
+    await expect(api.getDay('2026-10-01')).rejects.toBeInstanceOf(NetworkError);
+    expect(calls).toHaveLength(4);
+  });
+});

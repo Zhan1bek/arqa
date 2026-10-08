@@ -25,18 +25,28 @@ export function DayScreen() {
   const [date, setDate] = useState(today);
   const [latestDay, setLatestDay] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [daysVersion, setDaysVersion] = useState(0);
   const { state, reload } = useDay(api, date);
   const day = formatDay(date);
 
-  // Used for the "jump to the last shift" shortcut on empty days.
+  // For the "jump to the last shift" shortcut on empty days: loaded on open and after writes,
+  // not on every day switch.
   useEffect(() => {
     const controller = new AbortController();
     api
       .listDays(controller.signal)
       .then(({ days }) => setLatestDay(days[0]?.date ?? null))
-      .catch(() => setLatestDay(null));
+      .catch(() => {
+        if (!controller.signal.aborted) setLatestDay(null);
+      });
     return () => controller.abort();
-  }, [api, state.status]);
+  }, [api, daysVersion]);
+
+  /** Something may have been written: refresh the day and the list of days. */
+  const refreshAfterWrite = () => {
+    reload();
+    setDaysVersion((v) => v + 1);
+  };
 
   const data = state.data;
 
@@ -127,11 +137,16 @@ export function DayScreen() {
           date={date}
           utcOffset={data.utcOffset}
           dayTitle={`${day.title}, ${day.subtitle}`}
-          onClose={() => setAdding(false)}
+          onClose={() => {
+            // A save with an unknown outcome may have gone through — show the real day.
+            setAdding(false);
+            refreshAfterWrite();
+          }}
           onSaved={() => {
             setAdding(false);
-            reload();
+            refreshAfterWrite();
           }}
+          onDayChanged={refreshAfterWrite}
         />
       )}
     </SafeAreaView>
