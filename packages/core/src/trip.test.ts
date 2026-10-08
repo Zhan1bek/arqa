@@ -285,3 +285,15 @@ describe('parseTrip: структура и сообщения', () => {
     expect(input).toEqual(snapshot);
   });
 });
+
+describe('parseTrip: кросс-полевые правила не прячутся за другими ошибками', () => {
+  it('AC-5: неверная сумма и end < start → обе ошибки сразу', () => {
+    const fields = fieldsOf({ ...valid, amount: 0, end: '2026-10-01T08:00:00+05:00' });
+    expect(fields).toEqual(expect.arrayContaining(['amount', 'end']));
+  });
+
+  it('AC-5: неверное время и commission > amount → обе ошибки сразу', () => {
+    const fields = fieldsOf({ ...valid, start: 'утром', commission: 9999 });
+    expect(fields).toEqual(expect.arrayContaining(['start', 'commission']));
+  });
+});
