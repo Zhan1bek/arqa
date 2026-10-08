@@ -1,6 +1,7 @@
 {
   "name": "driver-shift-diary",
   "private": true,
+  "type": "module",
   "description": "Дневник смен водителя: API + мобильное приложение",
   "workspaces": [
     "packages/*",

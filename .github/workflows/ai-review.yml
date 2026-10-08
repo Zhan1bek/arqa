@@ -1,0 +1,35 @@
+# AI code review on every PR, using the same `reviewer` subagent definition as local work.
+# Off by default: set repository variable AI_REVIEW_ENABLED=true and secret ANTHROPIC_API_KEY.
+# The AI review is advisory — merge is gated by the CI workflow and a human approval.
+name: AI review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    if: vars.AI_REVIEW_ENABLED == 'true' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Act as the `reviewer` subagent defined in .claude/agents/reviewer.md.
+            Review `git diff origin/${{ github.base_ref }}...HEAD` against docs/SPEC.md,
+            docs/adr/ and the invariants in AGENTS.md. Post the findings as one PR comment
+            with `gh pr comment`. If there are no findings, say so in one line.
+          claude_args: |
+            --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)"
